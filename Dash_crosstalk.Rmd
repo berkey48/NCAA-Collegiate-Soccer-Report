@@ -1,0 +1,220 @@
+---
+title: "NCAA Women's Soccer Season — Performance Analytics Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: bootstrap
+    self_contained: true
+    source_code: embed
+---
+
+```{r setup, include=FALSE}
+
+library(flexdashboard)
+library(crosstalk)
+library(plotly)
+library(DT)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(slider)
+
+# 1. Load Data (Using updated filenames)
+df_raw     <- read_csv("training_data_anon.csv") %>% clean_names()
+roster_map <- read_csv("roster_map_anon.csv") %>% clean_names()
+df_minutes <- read_csv("minutes_data_anon.csv") %>% clean_names()
+
+
+# 2. Build Master Data Frame
+df_master <- df_raw %>%
+  mutate(
+    athlete_name = str_to_lower(str_trim(athlete_name)),
+    start_date   = mdy(start_date)
+  ) %>%
+  filter(!is.na(athlete_name), !is.na(start_date)) %>% 
+  left_join(
+    roster_map %>% mutate(athlete_name = str_to_lower(str_trim(athlete_name))), 
+    by = "athlete_name") %>%
+  group_by(athlete_name) %>%
+  arrange(start_date) %>%
+  mutate(
+    session_load = as.numeric(session_load),
+    distance_yds = as.numeric(distance_yds),
+    no_of_hi      = as.numeric(no_of_high_intensity_events),
+    acute_load   = slide_index_dbl(session_load, .i = start_date, .f = mean, .before = days(7)),
+    chronic_load = slide_index_dbl(session_load, .i = start_date, .f = mean, .before = days(28)),
+    acwr         = acute_load / chronic_load,
+    hi_density   = no_of_hi / (distance_yds / 1000),
+    row_key      = paste0(athlete_name, "_", row_number()),
+    
+    session_tag  = case_when(
+      str_detect(toupper(tags), "MD-0|MATCH") ~ "MATCH",
+      str_detect(toupper(tags), "MD-1") ~ "MD-1",
+      str_detect(toupper(tags), "MD-2") ~ "MD-2",
+      TRUE ~ "Training"
+    ),
+    
+    load_status = case_when(
+      acwr > 1.5 ~ "High",
+      acwr < 0.8 ~ "Below",
+      TRUE ~ "Normal"),
+    
+    tooltip_text = paste0("Athlete: ", athlete_name, "<br>Load: ", session_load, "<br>ACWR: ", round(acwr, 2))
+  ) %>%
+  ungroup() %>%
+  mutate(unit = factor(replace_na(as.character(unit), "Unassigned")))
+
+df_master <- df_master %>% 
+  select(athlete_name, unit, start_date, session_load, acwr, load_status,
+         no_of_hi, hi_density, top_speed_mph, row_key, session_tag, tooltip_text)
+n_athletes   <- n_distinct(df_master$athlete_name)
+avg_load_all <- round(mean(df_master$session_load, na.rm = TRUE), 1)
+
+shared_data <- SharedData$new(df_master)
+
+# Define your custom colors based on your specific hex codes
+pos_colors <- c(
+    "Defenders"   = "grey15", 
+    "Midfielders" = "#95A5A6", 
+    "Forwards"    = "#990000",
+    "Goalkeepers" = "#DAA520")
+
+density_colors <- c(
+    "MD-2"  = "#000000",
+    "MD-1"  = "#808080",
+    "MATCH" = "#990000")
+```
+
+Sidebar {.sidebar data-width=300}
+-----------------------------------------------------------------------
+
+### Dashboard Filters
+<br>
+
+```{r filters}
+filter_slider("sel_date", "Select Date Range:", shared_data, ~start_date)
+filter_checkbox("sel_unit", "Position:", shared_data, ~unit, inline = TRUE)
+
+```
+
+---
+
+### Key Metrics
+
+* **Load Status** — compared with 28-day rolling average
+* **HI Events** — moments of high-intensity activity
+* **Density** — intensity per 1,000 yards
+
+Row {data-height=150}
+-----------------------------------------------------------------------
+
+
+### Total Athletes Tracked
+
+```{r vbox_athletes}
+valueBox(n_athletes, icon = "fa-users")
+```
+
+### Average Session Load (All Sessions)
+
+```{r vbox_load}
+valueBox(avg_load_all, icon = "fa-tachometer-alt", color = "primary")
+```
+
+Row {data-height=600 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Daily Load by Athlete
+
+```{r plot_load}
+plot_ly(shared_data, x = ~start_date, y = ~session_load, color = ~unit,
+        colors = pos_colors, type = "scatter", mode = "markers",
+        text = ~tooltip_text, hoverinfo = "text") %>%
+  layout(dragmode = "select", xaxis = list(title = "Date"), yaxis = list(title = "Load"))
+```
+
+### Load vs. Volume
+
+```{r plot_density}
+plot_ly(shared_data, x = ~no_of_hi, y = ~session_load, color = ~unit,
+        colors = pos_colors, type = "scatter", mode = "markers",
+        text = ~tooltip_text, hoverinfo = "text") %>%
+  layout(xaxis = list(title = "HI Events"), yaxis = list(title = "Total Load"))
+```
+
+### Intensity Density (HI Events per 1,000 Yards)
+
+```{r}
+shared_density_only <- df_master %>%
+  filter(session_tag %in% c("MD-2", "MD-1", "MATCH")) %>%
+  SharedData$new(key = ~row_key, group = "SoccerReport")
+
+plot_ly(shared_density_only, 
+        x = ~session_tag, 
+        y = ~hi_density, 
+        color = ~session_tag,
+        colors = density_colors,
+        type = "box", 
+        boxpoints = "all", 
+        jitter = 0.3,
+        text = ~athlete_name, 
+        hoverinfo = "text") %>%
+  layout(
+    xaxis = list(
+      title = "Session Type", 
+      categoryorder = "array", 
+      categoryarray = c("MD-2", "MD-1", "MATCH")
+    ),
+    yaxis = list(title = "HI Events / 1k Yds"),
+    showlegend = FALSE
+  )
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Session Summary Table
+
+```{r table}
+datatable(
+  shared_data,
+  extensions = c("Scroller", "Buttons"),
+  options = list(
+    dom = "Bfrtip",
+    buttons = list("csv", "excel"),
+    scrollY = 300, 
+    scroller = TRUE,
+    columnDefs = list(
+      list(visible = FALSE, targets = c(9, 10)) # Hides row_key and tooltip_text
+    )
+  ),
+  colnames = c(
+    "Athlete"    = "athlete_name", 
+    "Unit"       = "unit", 
+    "Date"       = "start_date", 
+    "Load"       = "session_load", 
+    "ACWR"       = "acwr",        # Use lowercase 'acwr' here
+    "Status"     = "load_status",
+    "HI Events"  = "no_of_hi", 
+    "Density"    = "hi_density",  # Use the original 'hi_density'
+    "Top Speed"  = "top_speed_mph" # Use original 'top_speed_mph'
+  ),
+  rownames = FALSE, 
+  class = "stripe hover compact") %>% 
+  
+  formatRound(c("ACWR", "Density"), digits = 1) %>%
+  formatRound("Top Speed", digits = 2) %>% 
+  formatStyle(
+    'Status',
+    target = 'cell',
+    backgroundColor = styleEqual(
+      c("High", "Normal", "Below"), 
+      c('#990000', '#f8f9fa', '#808080') # Red, Light Grey, Dark Grey
+    ),
+    color = styleEqual(c("High"), c('white')) # Make text white on red background
+  )
+```

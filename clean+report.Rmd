@@ -1,0 +1,726 @@
+---
+title: "NCAA Women's Soccer Season — Performance Analytics Report"
+author: "Jordan Berke"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+  source_code: embed
+header-includes:
+  - \usepackage{float}
+  - \usepackage[dvipsnames]{xcolor}
+  - \usepackage{needspace}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \usepackage{hyperref}
+  - \usepackage{placeins}
+  - \hypersetup{colorlinks=true, linkcolor=RoyalBlue, urlcolor=MidnightBlue}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE, fig.pos = "H", out.width = "100%")
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(slider)
+library(patchwork)
+library(gt)
+library(tibble)
+
+## 1. DATA LOADING
+df_clean <- read_csv("training_data_anon.csv") %>%
+  clean_names() %>%
+  mutate(
+    start_date   = mdy(start_date),
+    session_load = as.numeric(session_load),
+    distance_yds = as.numeric(distance_yds),
+    hi_events    = as.numeric(no_of_high_intensity_events),
+    session_id   = paste(start_date, start_time),
+    session_tag  = str_extract(tags, "(?<=2-)[^,]+") %>% str_to_upper(),
+  ) %>%
+  filter(session_load > 20)
+
+df_results <- read_csv("WSoccResults.csv") %>%
+  mutate(start_date = mdy(start_date),
+         result = str_to_title(str_trim(result)))
+df_results_standardized <- df_results %>%
+  mutate(
+    match_date   = as.Date(start_date),
+    result_clean = case_when(
+      str_detect(result, "Win")  ~ "W",
+      str_detect(result, "Tie")  ~ "T",
+      str_detect(result, "Loss") ~ "L",
+      TRUE ~ NA_character_)) %>%
+  select(match_date, opponent, result_clean)
+
+df_minutes <- read_csv("minutes_data_anon.csv") %>%
+  filter(!is.na(join_name), join_name != "") %>% 
+  mutate(
+    start_date   = as.Date(start_date),
+    minutes      = as.numeric(minutes),
+    athlete_name = str_to_lower(str_trim(join_name))) %>%
+  filter(!is.na(minutes)) %>% 
+  select(athlete_name, start_date, minutes)
+
+roster_map <- read_csv("roster_map_anon.csv") %>% 
+  mutate(athlete_name = str_to_lower(str_trim(athlete_name)))
+
+df_with_rolling <- df_clean %>%
+  mutate(athlete_name = str_to_lower(str_trim(athlete_name))) %>%
+  left_join(df_minutes, by = c("athlete_name", "start_date")) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  mutate(minutes = replace_na(minutes, 0)) %>%
+  arrange(athlete_name, start_date) %>%
+  group_by(athlete_name) %>%
+  mutate(
+    chronic_load = slide_index_dbl(session_load, .i = start_date,
+                                   .f = ~mean(.x, na.rm = TRUE),
+                                   .before = days(28), .complete = FALSE),
+    acute_load   = slide_index_dbl(session_load, .i = start_date,
+                                   .f = ~mean(.x, na.rm = TRUE),
+                                   .before = days(7), .complete = FALSE),
+    acwr         = ifelse(is.finite(acute_load / chronic_load),
+                          acute_load / chronic_load, NA_real_)) %>%
+  ungroup() %>%
+  mutate(
+    load_status = case_when(
+      acwr > 1.5  ~ "High",
+      acwr < 0.8  ~ "Below",
+      TRUE        ~ "Normal"))
+
+valid_session_ids <- df_with_rolling %>%
+  group_by(session_id) %>% 
+  filter(n() >= 5) %>%
+  summarise(start_date = first(start_date), .groups = "drop") %>%
+  arrange(start_date) %>% 
+  pull(session_id)
+
+# Visual Branding
+color_high   <- "#990000" 
+color_normal <- "#000000" 
+color_below  <- "#808080"
+
+```
+
+\newpage
+
+# Executive Summary
+
+This report provides a comprehensive analysis of the 2025 Seattle U Women's Soccer season, focusing on player load management and its relationship to match outcomes. Key findings include:
+
+-   **Efficiency Gap**: Individual players in each position have vastly different weekly high-intensity outputs (times they reach >60% their top speed), suggesting need for individualized efficiency tracking.
+-   **Accounting for Travel Load**: Back-to-Back away games were more likely to end in a tie or loss. MD-2 sessions should be shorter with high-intensity as the focus to offset travel fatigue. If extra travel days are not permitted, have an activation session as soon as possible.
+-   **Intensity Density as a Win Predictor** High-speed events per 1,000 yds remains the primary determinate between wins and non-wins, especially when supported by a successful cycle of MD-2 intensity followed by a MD-1 load reduction.
+
+*Athlete names have been anonymized. Positional data is presented at the group level only.*
+
+
+## Initial Reccomendations
+
+1.  **Positional Efficiency Floors**: The lead up to games should include a reduced load but maintain intensity (speed and short bursts > distance). Since Midfielders generally carry the highest load, MD-1 practices should focus on more neural stimulation than actual load. Think technical/tactical and skill based drills.
+2.  **Accounting for Travel Fatigue**: Back-to-Back away games were more likely to end in a tie or loss. MD-2 sessions should be shorter with high-intensity as the focus to offset travel fatigue.
+3.  **Individualized Percentage-Based Taper**: Core players have vastly different high intensity densities (high intensity events / load) week to week. Focusing on setting a threshold that triggers an automatic "extended rest protocol" if Match Day densities drop 15% from weekly average.
+
+\newpage
+
+# Graph Key
+
+```{r graph keys, results='asis', fig.height=10, fig.width=10}
+# TRAINING GRAPH KEY
+train_key_df <- data.frame(
+  Status = factor(c("High", "Normal", "Below"), levels = c("High", "Normal", "Below")),
+  Load_Value = c(140, 100, 60),
+  Dist_Value = c(120, 90, 50), 
+  HI_Value = c(15, 8, 3),      
+  Label = c("High (>20% above avg)", "Normal (within avg limits)","Below (>30% below avg)"))
+
+p1 <- ggplot(train_key_df, aes(y = Status)) +
+  geom_col(aes(x = Load_Value, fill = Status), width = 0.6) +
+  geom_point(aes(x = Dist_Value), color = "#FFD700", size = 5, shape = 18) +
+  geom_text(aes(x = Load_Value, label = paste(HI_Value, "HI")), 
+            hjust = -0.2, color = "black", fontface = "bold", size = 5) +
+  geom_vline(xintercept = 90, linetype = "dashed", color = "black", size = 0.8) +
+  scale_fill_manual(values = c("High" = color_high, "Normal" = color_normal, "Below" = color_below)) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.3))) +
+  labs(title = "Daily Training Key", 
+       subtitle = "Bars = Load Status | Gold = Distance | Text = High Intensity Events") +
+  annotate("text", x = 92, y = 3.4, label = "Team Avg Load", fontface = "italic", size = 5, hjust = 0) +
+  theme_void() + 
+  theme(plot.title = element_text(face="bold", hjust=0.5, size = 14), 
+        plot.subtitle = element_text(size = 12, hjust = 0.5, color = "grey30"),
+        legend.position = "none",
+        plot.margin = margin(10, 40, 10, 10)) 
+
+# MATCH DAY GRAPH KEY
+match_key_df <- data.frame(x = 1:103, y = 1, intensity = 1:103, grp = "MINUTES CONTRIBUTED")
+
+
+p2 <- ggplot(match_key_df, aes(x = x, y = y, fill = intensity)) +
+  geom_tile() +
+  annotate("point", x = 80, y = 1, color = "white", size = 3) +
+  annotate("text", x = 105, y = 1, label = "25 HI", fontface = "bold", size = 5, hjust = 0) +
+  scale_fill_gradient(low = "#FFCCCC", high = color_high) +
+  scale_x_continuous(limits = c(0, 115), expand = c(0, 0)) + 
+  facet_grid(grp ~ .) + 
+  labs(title = "Match Day Key", 
+       subtitle = "Gradient = Load | White . = Distance | Text = HI Events") +
+  theme_void() + 
+  theme(
+    plot.title = element_text(face="bold", hjust=0.5, size = 14), 
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "grey30"),
+    strip.background = element_rect(fill = "black"),
+    strip.text.y = element_text(color = "white", fontface = "bold", angle = -90, size = 12), 
+    panel.spacing = unit(0, "lines"),
+    plot.margin = margin(10, 50, 10, 10),
+    legend.position = "right")
+
+
+p1 / p2
+
+```
+
+\newpage
+
+# Weekly Recap of Training Load & Intensity
+
+```{r weekly-recap-loop, fig.height=10, fig.width=8.5, echo=FALSE, results='asis'}
+
+# 1. INITIALIZE TRACKING
+current_week_start <- floor_date(min(df_with_rolling$start_date), unit = "weeks", week_start = 1) 
+
+for (s in valid_session_ids) {
+  event_data <- df_with_rolling %>% filter(session_id == s)
+  if (nrow(event_data) == 0) next
+  
+  this_date <- first(event_data$start_date)
+  this_week_start <- floor_date(this_date, unit = "weeks", week_start = 1)
+  
+  # 2. TRIGGER WEEKLY SUMMARY
+  if (this_week_start > current_week_start) {
+    
+    summary_data <- df_with_rolling %>% 
+      filter(start_date >= current_week_start & start_date < this_week_start) %>% 
+      group_by(athlete_name, unit) %>%
+      summarise(
+        total_weekly_load = sum(session_load, na.rm = TRUE),
+        weekly_baseline   = sum(chronic_load, na.rm = TRUE),
+        total_hi          = sum(hi_events, na.rm = TRUE), 
+        .groups = "drop"
+      ) %>%
+      filter(!is.na(unit)) %>%
+      mutate(
+        pct_of_baseline = total_weekly_load / weekly_baseline,
+        load_label = case_when(
+          pct_of_baseline > 1.2 ~ "High",
+          pct_of_baseline < 0.7 ~ "Below",
+          TRUE ~ "Normal"
+        )
+      )
+
+    if (nrow(summary_data) == 0) {
+      current_week_start <- this_week_start
+      next
+    }
+
+    # 3. PRINT HEADER AND PLOT
+    cat("\n\n## Weekly Summary: ", format(current_week_start, "%b %d"), " - ", format(this_week_start - 1, "%b %d"), "\n")
+    p_weekly <- ggplot(summary_data, aes(x = total_weekly_load, y = fct_reorder(athlete_name, total_weekly_load))) +
+      geom_segment(aes(x = 0, xend = weekly_baseline, y = athlete_name, yend = athlete_name), 
+                   color = "grey90", size = 2, alpha = 0.5) +
+      geom_segment(aes(x = 0, xend = total_weekly_load, y = athlete_name, yend = athlete_name), 
+                   color = "grey40", size = 0.8) +
+      geom_point(aes(color = load_label), size = 5) +
+      geom_text(aes(label = paste0(round(total_hi, 0), " HI")), hjust = -0.5, size = 3, fontface = "bold") +
+      facet_grid(unit ~ ., scales = "free_y", space = "free_y") + 
+      scale_color_manual(values = c("High" = color_high, "Normal" = color_normal, "Below" = color_below)) +
+      scale_x_continuous(expand = expansion(mult = c(0, 0.3))) +
+      labs(title = paste("Positional Workload vs. 28-Day Baseline"),
+           subtitle = paste("Week of", format(current_week_start, "%B %d, %Y")),
+           x = "Total Weekly Load (Points) | Shadow Bar = 28-Day Baseline", 
+           y = NULL,
+           color = "Load Status") + 
+      theme_minimal() +
+      theme(legend.position = "top",
+            strip.background = element_rect(fill = "grey20"),
+            strip.text = element_text(color = "white", face = "bold", size = 10),
+            axis.text.y = element_text(size = 8, face = "bold"),
+            panel.spacing = unit(1, "lines"), 
+            panel.grid.major.y = element_blank())
+    
+    print(p_weekly)
+    
+    cat("\n\\newpage\n") 
+    current_week_start <- this_week_start
+  }
+}
+```
+
+\newpage
+
+# Daily Trainings and Game Days
+
+```{r daily-loop, fig.height=4, fig.width=8.5, echo=FALSE, results='asis'}
+
+## LOOPING THROUGH EACH RECORDED SESSION
+
+for (s in valid_session_ids) {
+  event_data <- df_with_rolling %>% filter(session_id == s)
+  if (nrow(event_data) == 0) next
+  
+  this_date <- first(event_data$start_date)
+  match_info <- df_results %>% filter(start_date == this_date)
+  
+  is_match_day <- isTRUE(any(str_detect(str_to_lower(event_data$session_type), "match"), na.rm = TRUE)) ||
+               (isTRUE(any(str_detect(str_to_lower(event_data$tags), "md-0"), na.rm = TRUE)) &&
+                nrow(df_results %>% filter(start_date == this_date)) > 0)
+  tag <- event_data %>% pull(session_tag) %>% first()
+
+  if (is_match_day) {
+    res_text <- if(nrow(match_info) > 0) paste0(match_info$result_clean, " vs ", match_info$opponent) else "Match Day"
+    event_label <- paste0("MATCH DAY: ", res_text)
+  } else {
+    event_label <- paste0("Training Session (", ifelse(is.na(tag), "Untagged", tag), ")")
+  }
+  
+  cat("\n\n\\needspace{1.5in}\n")
+  cat(paste0("## ", format(this_date, "%b %d"), " - ", event_label, "\n\n"))
+     
+  if (!is_match_day) {
+    p <- ggplot(event_data, aes(y = fct_reorder(athlete_name, session_load))) +
+      geom_col(aes(x = session_load, fill = load_status), width = 0.7) + 
+      geom_point(aes(x = distance_yds / 10), color = "#FFD700", size = 2, shape = 18) +  
+      geom_text(aes(x = session_load, label = paste0(round(hi_events, 0), " HI")), 
+                hjust = -0.2, size = 2.5, fontface = "bold", color = "grey30") +
+      scale_fill_manual(
+  values  = c("High" = color_high, "Normal" = color_normal, "Below" = color_below),
+  na.value = color_normal) +
+      scale_x_continuous(name = "Session Load", sec.axis = sec_axis(~.*10, name = "Distance (yds)"),
+                         expand = expansion(mult = c(0, 0.15))) +
+      theme_minimal() + 
+      theme(legend.position = "none", 
+            axis.title.x.top = element_text(color = "darkgoldenrod", size = 8, face = "bold"),
+            panel.grid.major.y = element_blank()) +
+      labs(y = NULL, subtitle = "Bars = Load | Gold = Distance | Labels = HI Events")
+      
+  } else {
+    plot_data <- event_data %>%
+      mutate(grp = case_when(
+               is.na(minutes) | minutes == 0 ~ "DNP", 
+               minutes >= 60 ~ "60+ min",
+               minutes >= 30 ~ "30-60 min", 
+               minutes > 0  ~ "<30 min", 
+               TRUE ~ "DNP"),
+             grp = factor(grp, levels = c("60+ min", "30-60 min", "<30 min", "DNP")))
+
+    p <- ggplot(plot_data, aes(y = fct_reorder(athlete_name, session_load, .na_rm = TRUE))) +
+      geom_col(aes(x = session_load, fill = session_load), width = 0.7) + 
+      geom_point(aes(x = distance_yds / 10), color = "white", size = 1.5) +
+      geom_text(aes(x = session_load, label = paste0(round(hi_events, 0), " HI")), 
+                hjust = -0.2, size = 2, fontface = "bold", color = "black") +
+      scale_fill_gradient(low = "#FFCCCC", high = color_high) +
+      scale_x_continuous(name = "Match Load", sec.axis = sec_axis(~.*10, name = "Distance (yds)"),
+                         expand = expansion(mult = c(0, 0.2))) +
+      facet_grid(grp ~ ., scales = "free_y", space = "free_y") +
+      theme_minimal() + 
+      theme(strip.background = element_rect(fill = "black"),
+            strip.text = element_text(color = "white", face = "bold", size = 8),
+            legend.position = "none",
+            panel.grid.major.y = element_blank()) + 
+      labs(y = NULL, subtitle = "White = Distance | Labels = HI Events | Grouped by Match Minutes")
+    }
+
+  print(p)
+  cat("\n\n")
+}
+```
+
+\newpage
+
+# Load and Intensity Trends of Core Players
+
+### Core Players are defined as players who averaged more than 60min per game.
+
+```{r core player load, fig.height=10, fig.width=10}
+
+# PULLING COMMONLY USED STARTERS AND POWER SUBS
+
+core_players <- df_with_rolling %>%
+  filter(str_detect(session_tag, "MD-0")) %>%
+  group_by(athlete_name) %>%
+  summarise(
+    avg_mins = mean(as.numeric(.data$minutes), na.rm = TRUE), 
+    .groups = "drop") %>%
+  filter(avg_mins >= 60) %>%
+  pull(athlete_name)
+
+weekly_trends <- df_with_rolling %>%
+  filter(athlete_name %in% core_players) %>%
+  mutate(week_id = floor_date(start_date, unit = "weeks", week_start = 1)) %>%
+  group_by(week_id, athlete_name) %>%
+  summarise(weekly_total_load = sum(session_load, na.rm = TRUE), .groups = "drop") %>%
+  left_join(
+    df_results %>% 
+      mutate(week_id = floor_date(start_date, unit = "weeks", week_start = 1)) %>%
+      group_by(week_id) %>% 
+      summarise(result = first(result), .groups = "drop"), 
+    by = "week_id") %>%
+  filter(!is.na(result)) 
+
+# Showing Each Groups Weekly HI and Load vs Match Outcome
+
+p_load <- ggplot(weekly_trends, aes(x = factor(result, levels = c("Win", "Tie", "Loss")), y = weekly_total_load, fill = result)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.3) + 
+  scale_fill_manual(values = c("Win" = "#990000", "Tie" = "grey40", "Loss" = "black")) +
+  labs(
+    title = "Core Player Weekly Load vs. Match Outcome",
+    subtitle = "Analysis of players averaging >60m; Wins correlate with lower weekly volume",
+    x = "Match Result",
+    y = "Total Weekly Load") +
+  theme_minimal()
+
+
+weekly_hi_trends <- df_with_rolling %>%
+  filter(athlete_name %in% core_players) %>%
+  mutate(week_id = floor_date(start_date, unit = "weeks", week_start = 1)) %>%
+  group_by(week_id, athlete_name) %>%
+  summarise(
+    weekly_total_hi = sum(hi_events, na.rm = TRUE), 
+    .groups = "drop") %>%
+  left_join(
+    df_results %>% 
+      mutate(week_id = floor_date(start_date, unit = "weeks", week_start = 1)) %>%
+      group_by(week_id) %>% 
+      summarise(result = first(result), .groups = "drop"), 
+    by = "week_id") %>%
+  filter(!is.na(result))
+
+p_hi <- ggplot(weekly_hi_trends, aes(x = factor(result, levels = c("Win", "Tie", "Loss")), y = weekly_total_hi, fill = result)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.3, color = "darkred") + 
+  scale_fill_manual(values = c("Win" = "#990000", "Tie" = "grey40", "Loss" = "black")) +
+  labs(
+    title = "Weekly High Intensity Events vs. Match Outcome",
+    subtitle = "Core Players; Winning weeks show a significant 'Intensity Taper'",
+    x = "Match Result",
+    y = "Total Weekly HI Events") +
+  theme_minimal()
+
+
+p_load / p_hi
+```
+
+\newpage
+
+# Intensity Build up
+
+```{r Intensity Trends, fig.height=10, fig.width=10}
+
+# PULLING LOADS/HI EVENTS LEADING UP TO A MATCH AND MATCH RESULT
+
+df_results_clean <- df_results %>%
+  filter(
+    !is.na(result),
+    result != "",
+    !result %in% c("N/A", "TBD")) %>%
+  mutate(result = factor(result, levels = c("Win", "Loss", "Tie")))
+
+df_trend_final <- df_with_rolling %>%
+  mutate(
+    no_of_hi = hi_events,
+    dist_k_yds = as.numeric(distance_yds) / 1000,
+    hi_density = no_of_hi / dist_k_yds, 
+    taper_day = str_extract(tags, "(?i)md-[0-2]") %>% str_to_lower()) %>%
+  filter(!is.na(taper_day)) %>%
+  inner_join(
+    df_results_clean %>% select(start_date, result), 
+    by = join_by(closest(start_date <= start_date))) %>%
+  mutate(taper_day = factor(taper_day, levels = c("md-2", "md-1", "md-0")))
+
+df_taper <- df_with_rolling %>%
+  mutate(
+    taper_tag = str_extract(tags, "(?i)md-[12]") %>% str_to_lower(),
+    session_load = as.numeric(session_load)) %>%
+  filter(!is.na(taper_tag)) %>%
+  inner_join(
+    df_results_clean %>% select(start_date, result), 
+    by = join_by(closest(start_date < start_date)))
+
+p_trend_final <- ggplot(df_trend_final, aes(x = taper_day, y = hi_density, color = result, group = result)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  scale_color_manual(values = c("Win" = "#990000", "Loss" = "black", "Tie" = "grey60")) +
+  labs(title = "Intensity Build-Up Trend by Match Outcome",
+       subtitle = "HI Events per 1000 Yards: MD-2 through Match Day",
+       x = "Days Before Match", y = "HI Density (Events/1000yds)",
+       color = "Match Result") +
+  theme_minimal() +
+  scale_x_discrete(labels = c("md-2" = "MD-2\n(Prep)", "md-1" = "MD-1\n(Taper)", "md-0" = "Match\nDay"))
+
+p_taper <- ggplot(df_taper, aes(x = result, y = session_load, fill = taper_tag)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  scale_fill_manual(values = c("md-1" = "#990000", "md-2" = "black"), name = "Taper Day") +
+  labs(title = "Pre-Match Taper Load vs. Outcome",
+       subtitle = "Comparing absolute volume (Load) in the 48h before kickoff",
+       x = "Match Result", y = "Session Load") +
+  theme_minimal()
+
+p_trend_final / p_taper
+```
+
+\newpage
+
+# Positional Trends
+
+
+
+```{r position trends, fig.height=12, fig.width=10}
+
+df_md3 <- df_clean %>%
+  mutate(athlete_name = str_to_lower(str_squish(athlete_name))) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  filter(str_detect(tags, "md-3"), !is.na(unit)) %>%
+  group_by(unit) %>%
+  summarise(avg_load = mean(session_load, na.rm = TRUE), .groups = "drop")
+
+df_md2 <- df_clean %>%
+  mutate(athlete_name = str_to_lower(str_squish(athlete_name))) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  filter(str_detect(tags, "md-2"), !is.na(unit)) %>%
+  group_by(unit) %>%
+  summarise(avg_load = mean(session_load, na.rm = TRUE), .groups = "drop")
+
+df_md1 <- df_clean %>%
+  mutate(athlete_name = str_to_lower(str_squish(athlete_name))) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  filter(str_detect(tags, "md-1"), !is.na(unit)) %>%
+  group_by(unit) %>%
+  summarise(avg_load = mean(session_load, na.rm = TRUE), .groups = "drop")
+
+p_md3_pos <- ggplot(df_md3, aes(x = unit, y = avg_load, fill = unit)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = round(avg_load, 0)), vjust = -0.1, fontface = "bold", size = 5) +
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", 
+    "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000",
+    "Goalkeepers" = "#DAA520")) +
+  labs(title = "Position Group Load: MD-3 Average", x = NULL, y = "Avg Load") +
+  theme_minimal() +
+  theme(plot.title = element_text(face="bold", size=16, hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5, color="black"),
+        axis.text.x = element_text(face="bold", size=12),
+        legend.position = "none")
+
+p_md2_pos <- ggplot(df_md2, aes(x = unit, y = avg_load, fill = unit)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = round(avg_load, 0)), vjust = -0.1, fontface = "bold", size = 5) +
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", 
+    "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000",
+    "Goalkeepers" = "#DAA520")) +
+  labs(title = "Position Group Load: MD-2 Average", x = NULL, y = "Avg Load") +
+  theme_minimal() +
+  theme(plot.title = element_text(face="bold", size=16, hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5, color="black"),
+        axis.text.x = element_text(face="bold", size=12),
+        legend.position = "none")
+
+p_md1_pos <- ggplot(df_md1, aes(x = unit, y = avg_load, fill = unit)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = round(avg_load, 0)), vjust = -0.1, fontface = "bold", size = 5) +
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", 
+    "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000",
+    "Goalkeepers" = "#DAA520")) +
+  labs(title = "Position Group Load: MD-1 Average", x = NULL, y = "Avg Load") +
+  theme_minimal() +
+  theme(plot.title = element_text(face="bold", size=16, hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5, color="black"),
+        axis.text.x = element_text(face="bold", size=12),
+        legend.position = "none")
+
+p_md3_pos / p_md2_pos / p_md1_pos
+
+
+```
+
+```{r position trends2, fig.height=10, fig.width=10}
+
+df_md_results <- df_clean %>%
+  mutate(
+    athlete_name  = str_to_lower(str_squish(athlete_name)),
+    start_date    = as.Date(start_date),
+    days_to_match = as.numeric(str_extract(str_to_lower(tags), "(?<=md-)\\d"))) %>%
+  filter(between(days_to_match, 1, 3)) %>%
+  mutate(match_date = start_date + days(days_to_match)) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  left_join(df_results_standardized, by = "match_date") %>%
+  filter(!is.na(unit), !is.na(result_clean)) %>%
+  mutate(
+    md_day       = factor(paste0("MD-", days_to_match), levels = c("MD-3", "MD-2", "MD-1")),
+    result_clean = factor(result_clean, levels = c("W", "T", "L"))) %>%
+  group_by(result_clean, md_day, unit) %>%
+  summarise(
+    avg_load = mean(session_load, na.rm = TRUE),
+    avg_hi   = mean(hi_events,   na.rm = TRUE),
+    .groups  = "drop")
+
+ggplot(df_md_results, aes(x = unit, y = avg_load, fill = unit)) +
+  geom_col(width = 0.8, alpha = 0.9) +
+  geom_text(aes(label = round(avg_load, 0)), 
+            vjust = -0.6, size = 3.5, fontface = "bold") +
+  geom_text(aes(label = paste0(round(avg_hi, 0), " HI"), y = 20), 
+            vjust = 0, size = 2.5, color = "white", fontface = "bold.italic") +
+  facet_grid(result_clean ~ md_day) + 
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000", "Goalkeepers" = "#DAA520")) +
+  labs(title = "Average Positional Workload & Intensity by Match Outcome",
+        subtitle = "Bars = Avg Load | White Text = Avg High-Intensity Events", x = NULL, y = "Avg Load", fill = NULL) +
+  theme_minimal() +
+  theme(
+    strip.background = element_rect(fill = "grey90", color = "white"),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_blank(), 
+    axis.ticks.x = element_blank(),
+    legend.position = "top",
+    panel.grid.major.x = element_blank())
+```
+
+```{r, fig.height=10, fig.width=10}
+df_quality <- df_clean %>%
+  mutate(
+    athlete_name = str_to_lower(str_squish(athlete_name)),  # add this
+    start_date   = as.Date(start_date),
+    load_num     = as.numeric(session_load),
+    dist_num     = as.numeric(distance_yds),
+    hi_num       = hi_events) %>%
+  mutate(days_to_match = as.numeric(str_extract(str_to_lower(tags), "(?<=md-)\\d"))) %>%
+  filter(between(days_to_match, 1, 3), dist_num > 100) %>%
+  mutate(match_date = start_date + days(days_to_match)) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  left_join(df_results_standardized, by = "match_date") %>%
+  filter(!is.na(result_clean), !is.na(unit)) %>%
+  mutate(
+    efficiency_factor = load_num / dist_num,
+    hi_density        = hi_num / (dist_num / 1000)) %>%
+  group_by(result_clean, days_to_match, unit) %>%
+  summarise(
+    avg_efficiency = mean(efficiency_factor, na.rm = TRUE),
+    avg_hid        = mean(hi_density, na.rm = TRUE),
+    .groups = "drop") %>%
+  mutate(
+    md_label     = factor(paste0("MD-", days_to_match), levels = c("MD-3", "MD-2", "MD-1")),
+    result_clean = factor(result_clean, levels = c("W", "T", "L")))
+
+p_hid <- ggplot(df_quality, aes(x = unit, y = avg_hid, fill = unit)) +
+  geom_col(width = 0.75, alpha = 0.9) +
+  geom_text(aes(label = round(avg_hid, 1)), vjust = -0.5, size = 3, fontface = "bold") +
+  facet_grid(result_clean ~ md_label) +
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000", "Goalkeepers" = "#DAA520")) +
+  labs(
+    title = "Intensity Density (HI Events per 1k Yards)",
+    x = NULL, y = "HI / 1k Yds", fill = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    strip.background = element_rect(fill = "grey90", color = "white"),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank())
+
+
+p_eff <- ggplot(df_quality, aes(x = unit, y = avg_efficiency, fill = unit)) +
+  geom_col(width = 0.75, alpha = 0.9) +
+  geom_text(aes(label = round(avg_efficiency, 3)), vjust = -0.5, size = 3, fontface = "bold") +
+  facet_grid(result_clean ~ md_label) +
+  scale_fill_manual(values = c(
+    "Defenders" = "grey15", "Midfielders" = "#95A5A6", 
+    "Forwards" = "#990000", "Goalkeepers" = "#DAA520")) +
+  labs(
+    title = "Efficiency Factor (Internal Load per Yard)",
+    x = NULL, y = "Load / Yard", fill = NULL) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    strip.background = element_rect(fill = "grey90", color = "white"),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank())
+
+
+p_hid
+```
+
+# Team Strengths
+
+-   **Effective Defense**: Core defensive players maintained consistent high-intensity density during matches and routinely played full games. Goalkeepers maintained low goals-against ratios throughout the conference schedule.
+-   **Explosive Potential**: With optimal tapering, the team consistently contributed high-intensity events during matches. The team achieves high intensity density (high-speed events per 1,000 yards), which correlates with winning outcomes.
+-   **Intelligent Substitutions**: Substituted players (10–60m) contributed significantly to match load and high-intensity events, indicating effective use of the bench to maintain performance levels during demanding travel windows.
+
+# Areas of Improvement and Final Recommendations
+
+-   **Tapering Consistency**: A portion of match weeks demonstrated sub-optimal tapering patterns, particularly insufficient reductions in load from MD-2 to MD-1. These instances were associated with a ~31% reduction in match-day high-intensity events, suggesting that inadequate tapering may limit the expression of explosive actions during competition. However, variability in match outcomes indicates that tapering alone does not fully explain performance differences.
+-   **Optimizing MD-2 Load**: MD-2 sessions frequently exhibited high training volumes alongside high-intensity efforts. While this may provide a strong stimulus, excessive volume close to competition may contribute to residual fatigue. Emphasizing high-intensity density (quality) over total volume on MD-2—through targeted explosive and tactical drills may better support match-day readiness without compromising recovery.
+-   **Recovery**: The short turnaround between conference matches (Thursday–Sunday) represents a critical recovery window. Data trends suggest that players logging >60 minutes on the first match may carry residual fatigue into subsequent fixtures. Structuring Saturday sessions as low-load, tactically focused recovery (e.g., walkthroughs, low-impact movement) may help preserve high-intensity output in the second match and reduce accumulated fatigue. For the Sunday fixture, the 'Priming' window is effectively non-existent. The focus must shift entirely from preparation to preservation.
+
+Future monitoring should integrate both load reduction and preservation of high-intensity exposure to ensure players remain primed.
+
+\needspace{10in}
+# Optimized Schedule Sample
+
+
+```{r sample-schedule, echo=FALSE, message=FALSE, warning=FALSE}
+
+optimized_schedule <- tibble::tribble(
+  ~Day,        ~Focus,             ~Goal,                       ~Load_Strategy,
+  "Monday",    "Active Recovery",   "Flush fatigue",             "Low Load. Focus on mobility.",
+  "Tuesday",   "Tactical / MD-2",   "Nervous System 'Pop'",      "Intensity Density: Short sprints, 5v5 transitions.",
+  "Wednesday", "The 15% Taper",     "Energy Preservation",       "85% of rolling average. Maintain HI Density Floor.",
+  "Thursday",  "MATCH DAY 1",       "Peak Output",               "Maximize HI Density. Maintain Efficiency Floor.",
+  "Friday",    "MD+1 Recovery",     "System Reset",              "No on-field load for >60m players. Pool/Bike.",
+  "Saturday",  "Recovery Trough",   "Soreness Management",       "Technical walk-throughs and light priming.",
+  "Sunday",    "MATCH DAY 2",       "Secondary Peak",            "Target 90% of Thursday's HI Density.")
+
+optimized_schedule %>% 
+  gt() %>%
+  tab_header(
+    title = md("**Optimized Conference Week Schedule**"),
+    subtitle = "Strategic Periodization for Thursday/Sunday Match Cycles") %>%
+  cols_label(
+    Day = md("**Day**"),
+    Focus = md("**Focus**"),
+    Goal = md("**Goal**"),
+    Load_Strategy = md("**Load Strategy**")) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "#990000"),
+      cell_text(color = "white", weight = "bold")),
+    locations = cells_body(
+      columns = Day,
+      rows = Day %in% c("Thursday", "Sunday"))) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "grey90"),
+      cell_text(style = "italic")),
+    locations = cells_body(
+      rows = Day == "Wednesday")) %>%
+  tab_options(
+    table.width = pct(100),
+    column_labels.background.color = "black",
+    table.font.size = px(12)) %>%
+  as_latex() 
+```

@@ -1,0 +1,306 @@
+---
+title: "NCAA Women's Soccer Season — Performance Analytics Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: bootstrap
+runtime: shiny
+---
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(slider)
+library(gt)
+library(plotly)
+library(ggbeeswarm)
+
+# 1. Load Data
+df_clean <- read_csv("training_data_anon.csv") %>%
+  clean_names() %>%
+  mutate(
+    start_date   = mdy(start_date),
+    session_load = as.numeric(session_load),
+    distance_yds = as.numeric(distance_yds),
+    hi_events    = as.numeric(no_of_high_intensity_events),
+    # Logic to match your original regex extraction for session tags
+    session_tag = case_when(
+      str_detect(str_to_lower(tags), "md-0") ~ "MATCH",
+      str_detect(str_to_lower(tags), "md-1") ~ "MD-1",
+      str_detect(str_to_lower(tags), "md-2") ~ "MD-2",
+      str_detect(str_to_lower(tags), "md-3") ~ "MD-3",
+      str_detect(str_to_lower(tags), "md-4") ~ "MD-4",
+      TRUE ~ "Untagged"
+    ),
+    # Ensure chronological order in plots
+    session_tag = factor(session_tag, levels = c("MD-4", "MD-3", "MD-2", "MD-1", "MATCH", "Untagged")),
+    session_type = ifelse(session_tag == "MATCH", "Match Session", "Training Session")
+  ) %>%
+  filter(session_load > 10)
+
+roster_map <- read_csv("roster_map_anon.csv") %>% 
+  mutate(athlete_name = str_to_lower(str_trim(athlete_name)))
+
+df_minutes <- read_csv("minutes_data_anon.csv") %>%
+  mutate(
+    start_date   = as.Date(start_date),
+    athlete_name = str_to_lower(str_trim(join_name))) %>%
+  select(athlete_name, start_date, minutes)
+
+# 2. Process Metrics
+df_with_rolling <- df_clean %>%
+  mutate(athlete_name = str_to_lower(str_trim(athlete_name))) %>%
+  left_join(roster_map, by = "athlete_name") %>%
+  left_join(df_minutes, by = c("athlete_name", "start_date")) %>%
+  arrange(athlete_name, start_date) %>%
+  group_by(athlete_name) %>%
+  mutate(
+    chronic_load = slide_index_dbl(session_load, .i = start_date, .f = ~mean(.x, na.rm = TRUE), 
+                                   .before = days(28), .complete = FALSE),
+    acute_load   = slide_index_dbl(session_load, .i = start_date, .f = ~mean(.x, na.rm = TRUE), 
+                                   .before = days(7), .complete = FALSE),
+    acwr         = acute_load / chronic_load
+  ) %>%
+  ungroup() %>%
+  mutate(
+    load_status = case_when(
+      acwr > 1.3  ~ "High",   # Matching original logic threshold (~1.2-1.3)
+      acwr < 0.8  ~ "Below",
+      TRUE        ~ "Normal"
+    )
+  )
+
+# Visual Branding
+color_high   <- "#990000" 
+color_normal <- "#000000" 
+color_below  <- "#808080"
+
+```
+
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+
+### Dashboard Filters
+```{r}
+
+selectInput("unit_choice", "Position Group:", 
+            choices = c("All", unique(roster_map$unit)), selected = "All")
+
+dateRangeInput("date_range", "Date Range:",
+               start = max(df_with_rolling$start_date, na.rm=T) - days(7),
+               end = max(df_with_rolling$start_date, na.rm=T))
+
+checkboxGroupInput("session_filter", "Session Type:",
+                   choices = c("Training Session", "Match Session"),
+                   selected = c("Training Session", "Match Session"))
+```
+
+### Key Metrics
+
+* A:C Ratio: Acute Load (7-day avg) / Chronic Load (28-day avg)
+* HI Events: Moments of high-intensity
+* HI Density: HI Events normalized by distance (per 1000 yards)
+* Density: Intensity per 1000 yards
+* Timeline: Vertical red lines indicate Game Days.
+* "Heavy" Movers: Players with high Load but low HI events, fatigue indicator
+
+Row {data-height=100}
+-----------------------------------------------------------------------
+
+### Total Athletes Tracked
+
+```{r}
+renderValueBox({
+  count <- df_with_rolling %>% 
+    filter(unit == input$unit_choice | input$unit_choice == "All") %>% 
+    pull(athlete_name) %>% n_distinct()
+  valueBox(count, icon = "fa-users")
+})
+```
+
+### Average Session Load
+
+```{r}
+renderValueBox({
+  avg_val <- df_with_rolling %>%
+    filter(unit == input$unit_choice | input$unit_choice == "All",
+           start_date >= input$date_range[1],
+           start_date <= input$date_range[2],
+           session_type %in% input$session_filter) %>%
+    summarise(avg_load = mean(session_load, na.rm = TRUE)) %>%
+    pull(avg_load)
+  
+  valueBox(round(coalesce(avg_val, 0), 1), caption = "Avg Session Load", icon = "fa-tachometer-alt", color = "primary")
+})
+
+```
+
+Row {data-height=600 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### 7-Day Training Load Table
+
+```{r}
+
+render_gt({
+  df_with_rolling %>%
+    filter(
+      session_type == "Training Session",
+      unit == input$unit_choice | input$unit_choice == "All",
+      start_date >= input$date_range[1],
+      start_date <= input$date_range[2]) %>%
+    group_by(athlete_name, unit) %>%
+    summarise(
+      Sessions    = n(),
+      Acute_Avg   = mean(acute_load,  na.rm = TRUE),
+      Chronic_Avg = mean(chronic_load, na.rm = TRUE),
+      AC_Ratio    = mean(acwr,         na.rm = TRUE),
+      Max_Speed   = max(as.numeric(top_speed_mph), na.rm = TRUE),
+      .groups = "drop") %>%
+    arrange(desc(AC_Ratio)) %>%
+    gt() %>%
+    tab_header(title = "Workload Ratio Analysis", subtitle = "Selected period vs 28-day chronic baseline") %>%
+    data_color(
+      columns = AC_Ratio,
+      palette = c("#63be7b", "#ffffff", "#f8696b"),
+      domain = c(0.7, 1.5)) %>%
+    fmt_number(columns = -c(athlete_name, unit, Sessions), decimals = 1) %>%
+    opt_stylize(style = 1, color = "gray")
+})
+
+
+```
+
+### Daily Load Timeline
+
+```{r}
+renderPlotly({
+  plot_data <- df_with_rolling %>%
+    filter(unit == input$unit_choice | input$unit_choice == "All",
+           start_date >= input$date_range[1],
+           start_date <= input$date_range[2])
+  
+  match_dates <- plot_data %>% filter(session_tag == "MATCH") %>% distinct(start_date)
+  
+  p <- ggplot(plot_data, aes(x = start_date, y = session_load)) +
+    geom_vline(data = match_dates, aes(xintercept = start_date), 
+               color = color_high, linetype = "dashed", alpha = 0.4) +
+    geom_quasirandom(aes(color = load_status, text = paste("Athlete:", athlete_name, "<br>Load:", round(session_load,1))), alpha = 0.7) +
+    scale_color_manual(values = c("High" = color_high, "Normal" = color_normal, "Below" = color_below)) +
+    theme_minimal() +
+    labs(x = "Date", y = "Session Load")
+  
+  ggplotly(p, tooltip = "text")
+})
+```
+
+
+### Intensity Density (HI Events per 1000 Yards)
+
+```{r}
+
+renderPlotly({
+  df_trend <- df_with_rolling %>%
+    filter(start_date >= input$date_range[1],
+           start_date <= input$date_range[2],
+           unit == input$unit_choice | input$unit_choice == "All",
+           session_tag %in% c("MD-2", "MD-1", "MATCH"))
+
+  p <- ggplot(df_trend, aes(x = session_tag, y = hi_events / (distance_yds / 1000), fill = session_tag)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+    geom_jitter(width = 0.1, alpha = 0.4) +
+    scale_fill_manual(values = c("MATCH" = color_high, "MD-1" = "grey", "MD-2" = color_normal)) +
+    theme_minimal() +
+    labs(title = "HI Density (HI Events / 1k Yds)", x = "Match Proximity", y = "Density")
+  
+  ggplotly(p)
+})
+```
+
+### Volume vs. Intensity 
+```{r}
+renderPlotly({
+  df_mech <- df_with_rolling %>%
+    filter(!unit %in% c("Goalkeepers"),
+           start_date >= input$date_range[1],
+           start_date <= input$date_range[2],
+           session_type %in% input$session_filter)
+
+  p <- ggplot(df_mech, aes(x = hi_events, y = session_load, color = session_type)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 0.5) +
+    facet_wrap(~unit) +
+    scale_color_manual(values = c("Match Session" = color_high, "Training Session" = "black")) +
+    theme_minimal() +
+    labs(x = "High Intensity Events", y = "Total Session Load")
+  
+  ggplotly(p)
+})
+```
+
+Row {data-height=220}
+-----------------------------------------------------------------------
+
+### Understanding the Volume vs. Intensity Map {data-padding=15}
+
+```{r}
+wellPanel(
+  style = "background-color: #ffffff; border-left: 5px solid #317eac; padding: 15px;",
+  HTML("
+    <div style='display: flex; gap: 20px;'>
+      <div style='flex: 1;'>
+        <h4 style='margin-top:0;'>The Relationship</h4>
+        <p>This chart plots <strong>High Intensity (HI) Events</strong> against <strong>Session Load</strong>. 
+        In fresh athletes, these move together: as explosive actions increase, the total physical cost (Load) rises.</p>
+        <strong>Grey Shaded Zone:</strong> Represents the 'Expected Cost.' Players inside this zone are performing at the positional average.
+      </div>
+      
+      <div style='flex: 1; border-left: 1px solid #ddd; padding-left: 20px;'>
+        <h4 style='margin-top:0;'>How to Identify Fatigue</h4>
+        <ul style='padding-left: 15px;'>
+          <li><span style='color: #28a745;'><strong>High Efficiency (Low Right):</strong></span> High explosive output with a relatively low physical cost. Indicates 'fresh legs', or extreme fitness. </li>
+          <li><span style='color: #28a745;'><strong>Normal Relationship (Following Line):</strong></span> The athlete is moving efficiently and as expected; their total work is translating into explosive power.</li>
+          <li><span style='color: #d9534f;'><strong>The 'Heavy' Mover (High Left):</strong></span> <strong>RED FLAG.</strong> High Load with very few HI events. This suggests the body is working hard but cannot produce explosive power—a primary sign of fatigue.</li>
+        </ul>
+      </div>
+    </div>
+  ")
+)
+```
+
+
+
+### Recent Session Summary Table
+
+```{r}
+render_gt({
+  df_with_rolling %>%
+    filter(start_date >= input$date_range[1],
+       start_date <= input$date_range[2],
+       unit == input$unit_choice | input$unit_choice == "All") %>% 
+    group_by(athlete_name, unit) %>%
+    summarise(
+      Sessions   = n(),
+      Total_Load = sum(session_load,  na.rm = TRUE),
+      Avg_HI     = mean(hi_events,    na.rm = TRUE),
+      Max_Speed  = max(as.numeric(top_speed_mph), na.rm = TRUE),
+      .groups = "drop") %>%
+    arrange(desc(Total_Load)) %>%
+    gt() %>%
+    cols_label(
+      athlete_name = "Athlete",
+      unit         = "Position",
+      Total_Load   = "Total Load",
+      Avg_HI       = "Avg HI Events",
+      Max_Speed    = "Top Speed") %>%
+    fmt_number(columns = c(Total_Load, Avg_HI, Max_Speed), decimals = 1) %>%
+    opt_stylize(style = 1, color = "gray")
+})
+```
+
+
