@@ -111,12 +111,26 @@ The following anonymized CSV files are required to render all three outputs:
 
 ---
 
-## 💡 Key Findings (2025 Season)
+## 💡 Key Findings 
 
 - **HI Density as a win predictor** — High-speed events per 1,000 yards was the strongest differentiator between winning and non-winning weeks, particularly when preceded by an effective MD-2 intensity stimulus and MD-1 load reduction.
-- **Travel fatigue impact** — Back-to-back away matches were associated with a higher rate of ties and losses, suggesting MD-2 session design needs to account for travel load.
+- **Travel fatigue impact** — Back-to-back away matches were associated with a higher rate of ties and losses, suggesting the MD-2 session design needs to account for travel load.
 - **Tapering consistency** — Weeks with insufficient load reduction from MD-2 to MD-1 correlated with ~31% fewer match-day high-intensity events.
 
 ---
+
+## 🎯 Project Context
+
+Built in collaboration with the coaching staff. Key priorities identified through
+stakeholder interviews: 
+
+- **Restructuring Trainings while Traveling** — Balancing travel demands with 
+  academic obligations, ensuring athletes can recover adequately before competition. 
+  Suggestions included:
+  - 2x sessions the day before the match (MD-1): one stimulus-focused, one tactical
+  - 1x session MD-1 + 1x morning session on match day (MD): stimulus and tactical, respectively
+    
+Both approaches prioritize **low total load** — maximizing high-intensity (HI) 
+density while keeping total distance minimal.
 
 *Built as part of the M.S. Kinesiology (Data Science Track) program at Seattle University.*
