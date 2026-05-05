@@ -107,22 +107,15 @@ The following anonymized CSV files are required to render all three outputs:
 ## 📊 Live Demos
 - [Shiny Dashboard](https://j-berke48.shinyapps.io/Dash_shiny/)
 - [Static HTML Dashboard](https://berkey48.github.io/NCAA-Collegiate-Soccer-Report/dashboards/Dash_crosstalk.html)
-- [PDF Season Report](./report/clean+report.pdf)
-
----
-
-## 💡 Key Findings 
-
-- **HI Density as a win predictor** — High-speed events per 1,000 yards was the strongest differentiator between winning and non-winning weeks, particularly when preceded by an effective MD-2 intensity stimulus and MD-1 load reduction.
-- **Travel fatigue impact** — Back-to-back away matches were associated with a higher rate of ties and losses, suggesting the MD-2 session design needs to account for travel load.
-- **Tapering consistency** — Weeks with insufficient load reduction from MD-2 to MD-1 correlated with ~31% fewer match-day high-intensity events.
+- [PDF Season Report](https://github.com/berkey48/NCAA-Collegiate-Soccer-Report/blob/main/report/clean%2Breport.pdf)
 
 ---
 
 ## 🎯 Project Context
 
-Built in collaboration with the coaching staff. Key priorities identified through
-stakeholder interviews: 
+Coaching staff wanted to understand how to optimize performance for the following season. 
+We identified a core operational challenge: how to structure travel-week training so athletes aren't missing excessive class time *and* 
+aren't arriving to competition still carrying road fatigue?
 
 - **Restructuring Trainings while Traveling** — Balancing travel demands with 
   academic obligations, ensuring athletes can recover adequately before competition. 
@@ -133,4 +126,15 @@ stakeholder interviews:
 Both approaches prioritize **low total load** — maximizing high-intensity (HI) 
 density while keeping total distance minimal.
 
-*Built as part of the M.S. Kinesiology (Data Science Track) program at Seattle University.*
+---
+
+## 💡 Key Findings 
+
+- **HI Density as a win predictor** — High-speed events per 1,000 yards were the strongest differentiator between winning and non-winning weeks, particularly when preceded by an effective MD-2 intensity stimulus and MD-1 load reduction.
+- **Travel fatigue impact** — Back-to-back away matches were associated with a higher rate of ties and losses, suggesting the MD-2 session design needs to account for travel load.
+- **Tapering consistency** — Weeks with insufficient load reduction from MD-2 to MD-1 correlated with ~31% fewer match-day high-intensity events.
+
+
+
+*Built as part of the M.S. Kinesiology (Data Science Track) program at Seattle 
+University, in collaboration with the women's soccer coaching staff.*
