@@ -22,7 +22,7 @@ library(janitor)
 library(lubridate)
 library(slider)
 
-# 1. Load Data (Using updated filenames)
+# 1. Load Data 
 df_raw     <- read_csv("training_data_anon.csv") %>% clean_names()
 roster_map <- read_csv("roster_map_anon.csv") %>% clean_names()
 df_minutes <- read_csv("minutes_data_anon.csv") %>% clean_names()
@@ -75,7 +75,7 @@ avg_load_all <- round(mean(df_master$session_load, na.rm = TRUE), 1)
 
 shared_data <- SharedData$new(df_master)
 
-# Define your custom colors based on your specific hex codes
+# Custom Colors
 pos_colors <- c(
     "Defenders"   = "grey15", 
     "Midfielders" = "#95A5A6", 
@@ -189,7 +189,7 @@ datatable(
     scrollY = 300, 
     scroller = TRUE,
     columnDefs = list(
-      list(visible = FALSE, targets = c(9, 10)) # Hides row_key and tooltip_text
+      list(visible = FALSE, targets = c(9, 10)) 
     )
   ),
   colnames = c(
@@ -197,11 +197,11 @@ datatable(
     "Unit"       = "unit", 
     "Date"       = "start_date", 
     "Load"       = "session_load", 
-    "ACWR"       = "acwr",        # Use lowercase 'acwr' here
+    "ACWR"       = "acwr",        
     "Status"     = "load_status",
     "HI Events"  = "no_of_hi", 
-    "Density"    = "hi_density",  # Use the original 'hi_density'
-    "Top Speed"  = "top_speed_mph" # Use original 'top_speed_mph'
+    "Density"    = "hi_density",  
+    "Top Speed"  = "top_speed_mph" 
   ),
   rownames = FALSE, 
   class = "stripe hover compact") %>% 
@@ -213,8 +213,8 @@ datatable(
     target = 'cell',
     backgroundColor = styleEqual(
       c("High", "Normal", "Below"), 
-      c('#990000', '#f8f9fa', '#808080') # Red, Light Grey, Dark Grey
+      c('#990000', '#f8f9fa', '#808080') 
     ),
-    color = styleEqual(c("High"), c('white')) # Make text white on red background
+    color = styleEqual(c("High"), c('white')) 
   )
 ```
