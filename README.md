@@ -104,24 +104,10 @@ The following anonymized CSV files are required to render all three outputs:
 
 ---
 
-## 🚀 Running the Dashboards
-
-### Shiny Dashboard
-```r
-rmarkdown::run("Dash_shiny.Rmd")
-```
-
-### Static HTML Dashboard
-```r
-rmarkdown::render("Dash_crosstalk.Rmd")
-```
-
-### PDF Season Report
-```r
-rmarkdown::render("clean_report.Rmd", output_format = "pdf_document")
-```
-
-> Requires a LaTeX distribution (e.g., TinyTeX: `tinytex::install_tinytex()`)
+## 📊 Live Demos
+- [Shiny Dashboard](https://j-berke48.shinyapps.io/Dash_shiny/)
+- [Static HTML Dashboard](https://berkey48.github.io/repo-name/Dash_crosstalk.html)
+- [PDF Season Report](./clean_report.pdf)
 
 ---
 
