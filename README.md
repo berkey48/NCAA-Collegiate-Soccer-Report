@@ -1,4 +1,4 @@
-# NCAA Women's Soccer — Performance Analytics Suite
+# NCAA Women's Soccer — Performance Analytics
 
 A multi-format performance analytics system built for NCAA Women's Soccer, designed to help coaching and high-performance staff monitor training load, manage fatigue, and optimize match preparation.
 
