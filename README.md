@@ -137,4 +137,4 @@ density while keeping total distance minimal.
 
 
 *Built as part of the M.S. Kinesiology (Data Science Track) program at Seattle 
-University, in collaboration with the women's soccer coaching staff.*
+University, in collaboration with a division 1 women's soccer coaching staff.*
