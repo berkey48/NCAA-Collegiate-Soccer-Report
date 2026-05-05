@@ -107,7 +107,7 @@ The following anonymized CSV files are required to render all three outputs:
 ## 📊 Live Demos
 - [Shiny Dashboard](https://j-berke48.shinyapps.io/Dash_shiny/)
 - [Static HTML Dashboard](https://berkey48.github.io/NCAA-Collegiate-Soccer-Report/dashboards/Dash_crosstalk.html)
-- [PDF Season Report](./report/clean_report.pdf)
+- [PDF Season Report](./report/clean+report.pdf)
 
 ---
 
