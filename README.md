@@ -134,7 +134,3 @@ density while keeping total distance minimal.
 - **Travel fatigue impact** — Back-to-back away matches were associated with a higher rate of ties and losses, suggesting the MD-2 session design needs to account for travel load.
 - **Tapering consistency** — Weeks with insufficient load reduction from MD-2 to MD-1 correlated with ~31% fewer match-day high-intensity events.
 
-
-
-*Built as part of the M.S. Kinesiology (Data Science Track) program at Seattle 
-University, in collaboration with a division 1 women's soccer coaching staff.*
